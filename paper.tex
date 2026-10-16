@@ -1,0 +1,407 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{amsmath,amssymb,amsthm,mathtools,bm,booktabs,array,microtype,graphicx}
+\usepackage{hyperref}
+\hypersetup{colorlinks=true,linkcolor=blue,citecolor=blue,urlcolor=blue}
+
+\newtheorem{theorem}{Theorem}[section]
+\newtheorem{lemma}[theorem]{Lemma}
+\newtheorem{proposition}[theorem]{Proposition}
+\newtheorem{corollary}[theorem]{Corollary}
+\theoremstyle{remark}
+\newtheorem{remark}[theorem]{Remark}
+
+\newcommand{\E}{\mathbb E}
+\newcommand{\Var}{\operatorname{Var}}
+\newcommand{\Cov}{\operatorname{Cov}}
+\newcommand{\R}{\mathbb R}
+\newcommand{\1}{\mathbf 1}
+
+\title{Teacher Supervision, Fixed Representations and Calibration:\\
+Exact Risk Calculations for Candidate-Scoring Decision Models}
+\author{Agus Sudjianto \and Denis Burakov}
+\date{October 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Candidate-scoring decision models return a probability distribution over a presented set of answers. The public documentation of one such system, Jev, and of an open counterpart, JevAny, describes three training ingredients that determine what these probabilities estimate: soft target distributions or reference probabilities produced by larger models, a frozen pretrained backbone with a small trainable component and temperature calibration on held-out data. We study each ingredient in a Gaussian surrogate in which the risks can be computed exactly. For least squares with Gaussian random design we give the finite-sample excess risk of training on teacher targets, on a fixed linear compression of the predictors and on a mixture of teacher targets and outcomes. The mixture result allows the teacher to use directions that the compression discards and allows the two target errors to be correlated. The optimal teacher weight follows in closed form, and the bias that a compressed student inherits from the teacher is the projection of the teacher bias onto the retained directions. For a Gaussian-probit outcome we give the excess Brier risk of a distorted teacher, its calibration curve under arbitrary coefficient distortion and the residual risk after exact recalibration. The exact recalibration map is a temperature scaling on the probit scale, and it removes all excess risk if and only if the teacher coefficient is a multiple of the outcome coefficient. We also state the coherence condition that independently computed candidate scores must satisfy when an event is divided into subevents; this condition is Luce's choice axiom. Monte Carlo experiments agree with every formula under Gaussian design. Under uniform and multivariate-$t$ designs with the same covariance, the simulated regression risks at $n=12$ lie up to $10\%$ below and up to $35\%$ above the formulas. The results concern explicit surrogates and make no claim about the internal behavior of Jev.
+\end{abstract}
+
+\noindent\textbf{Keywords:} knowledge distillation; soft labels; random-design regression; inverse Wishart distribution; probit model; probability calibration; temperature scaling; Brier score; choice axiom; language-model classifiers.
+
+\section{Introduction}\label{sec:intro}
+A candidate-scoring decision model receives a state, a question and a set of candidate answers, and it returns a probability for each candidate. When the candidates are a fixed set of class labels the model is a classifier with a text interface. The probability it returns estimates a conditional distribution, and the training targets determine which distribution that is. The probability that an event occurs, the probability that an annotator selects a candidate and the probability that a reference model assigns to a candidate are different conditional distributions, and a model can estimate one of them well while estimating the others poorly.
+
+Jev is a candidate-scoring model released by TypeSafe \cite{typesafe}. The announcement describes it as a model for structured decisions that returns all outputs in a single query, trained with a method called reinforcement learning for calibrated decisions; for high-cardinality choices it scores candidates independently and then makes an explicit choice. The announcement also states that its workflow evaluations use the predictions of large external models as reference probabilities. The training objective itself is not specified in detail. The JevAny documentation \cite{jevany} describes an openly documented system of the same type. Its released models keep the backbone weights frozen and train low-rank (LoRA, rank 8) adapters together with a scoring head; training uses either a hard target or a normalized soft target distribution over the candidates; and a temperature fitted on a separate calibration set is applied to the candidate scores. Jev also appears as one of the AI judges in the adapted imitation game of Burakov \cite[Chap.~1]{burakov}.
+
+These descriptions identify three mechanisms that bear on the meaning of the output probabilities. Soft targets and reference probabilities make the output of a teacher the quantity that the student learns to reproduce \cite{hinton}. A frozen backbone restricts the student to functions of a fixed representation. Temperature calibration changes the scale of the scores without changing their ranking \cite{guo}. Because the full Jev objective is not public, we do not model Jev. We analyze each mechanism in a Gaussian surrogate in which the finite-sample risk and the calibration curve can be computed exactly, and we state which conclusions depend on the Gaussian assumptions.
+
+Section~\ref{sec:regression} treats least squares with Gaussian random design. The outcome-supervised risk is classical \cite{breiman}; the teacher-target and mixed-supervision risks follow from the same inverse-Wishart calculation and are included for completeness. Section~\ref{sec:rep} gives the exact risk of a student restricted to a fixed linear representation and trained on a mixture of outcomes and teacher targets, in the case where the teacher depends on directions that the representation discards and the two target errors are correlated (Theorem~\ref{th:unified}). From it we obtain the optimal teacher weight and a projection identity for the teacher bias that the compressed student inherits. Section~\ref{sec:probit} turns to a binary outcome under a Gaussian-probit model. It gives the calibration curve of a teacher with an arbitrary coefficient distortion (Theorem~\ref{th:generalcal}), shows that the exact recalibration map is a temperature scaling and gives the residual Brier risk after recalibration in closed form (Corollary~\ref{cor:recal}). Section~\ref{sec:coherence} states the coherence condition for candidate scores, and Section~\ref{sec:mc} reports Monte Carlo checks, including designs that violate the Gaussian assumption.
+
+\section{Estimands}\label{sec:estimands}
+Let $X\in\R^d$ denote the observed predictors, $Y$ a realized outcome and $T$ the output of a teacher. For a binary outcome the target of an outcome-supervised predictor is $\eta(x)=\Pr(Y=1\mid X=x)$, whereas a student trained on teacher outputs estimates $t(x)=\E[T\mid X=x]$. A strictly proper scoring rule is minimized in expectation by the conditional distribution of the training target \cite{gneiting}, so a low proper score against teacher targets establishes that the student reproduces $t$; it does not establish that $t=\eta$.
+
+A candidate-choice model may estimate $\Pr(A=a\mid X=x,Q=q,\mathcal C)$, where $A$ is the candidate selected by an annotator, a reference model or a policy, $Q$ is the question and $\mathcal C$ is the presented candidate set. This probability equals $\Pr(Y=a\mid X=x)$ only under a stated relationship between $A$ and $Y$. A related distinction applies to evidential readings of model scores. Good \cite{good} describes Turing's weight of evidence as the logarithm of a Bayes factor, a ratio of likelihoods under two specified hypotheses. A logit or a log-ratio of softmax outputs has this interpretation only when its numerator and denominator are such likelihoods.
+
+The exact calculations use two surrogates: linear regression with squared error (Sections~\ref{sec:regression} and~\ref{sec:rep}) and a binary probit model (Section~\ref{sec:probit}). The representation is a fixed linear map chosen before the labeled sample is drawn. This corresponds to a frozen backbone with a linear head. Adapting the backbone, for example through LoRA adapters, changes the representation with the labels and lies outside the exact results.
+
+\section{Least squares with Gaussian random design}\label{sec:regression}
+\subsection{Outcome supervision}
+Let $(X_i,Y_i)$, $i=1,\ldots,n$, be independent with
+\begin{equation}\label{eq:dgp}
+ X_i\sim N_d(0,\Sigma),\qquad Y_i=X_i^\top\beta+\varepsilon_i,
+ \qquad \varepsilon_i\sim N(0,\sigma^2),
+\end{equation}
+where $\Sigma\succ0$ and the errors are independent of the design and of each other. Let $\mathbf X$ be the $n\times d$ design matrix and $X_0$ an independent test input from the same distribution. For a coefficient estimator $\widehat\theta$ the excess prediction risk is
+\begin{equation}\label{eq:risk}
+ \mathcal E(\widehat\theta)=\E\big[(X_0^\top\widehat\theta-X_0^\top\beta)^2\big]
+ =\E\big[(\widehat\theta-\beta)^\top\Sigma(\widehat\theta-\beta)\big],
+\end{equation}
+and the mean squared error for a fresh outcome is $\sigma^2+\mathcal E(\widehat\theta)$.
+
+\begin{lemma}[Outcome-supervised least squares {\cite{breiman}}]\label{th:ols}
+If $n>d+1$, the estimator $\widehat\beta_O=(\mathbf X^\top\mathbf X)^{-1}\mathbf X^\top\mathbf Y$ satisfies
+\begin{equation}\label{eq:olsrisk}
+\mathcal E(\widehat\beta_O)=\frac{\sigma^2d}{n-d-1}.
+\end{equation}
+\end{lemma}
+\begin{proof}
+Conditionally on $\mathbf X$, $\widehat\beta_O-\beta\sim N(0,\sigma^2(\mathbf X^\top\mathbf X)^{-1})$. Since $\mathbf X^\top\mathbf X\sim W_d(\Sigma,n)$, its inverse has mean $\Sigma^{-1}/(n-d-1)$ for $n>d+1$ \cite{anderson,muirhead}. Taking the expectation of $\sigma^2\operatorname{tr}\{\Sigma(\mathbf X^\top\mathbf X)^{-1}\}$ gives \eqref{eq:olsrisk}.
+\end{proof}
+
+\subsection{Teacher supervision}
+Suppose a teacher supplies $T_i=X_i^\top(\beta+\delta)+\xi_i$, where $\xi_i\sim N(0,\tau^2)$ is independent of the design. The vector $\delta$ is the systematic teacher error, and the student fits least squares to $T$ in place of $Y$.
+
+\begin{proposition}[Teacher-target risk]\label{th:teacher}
+For $n>d+1$ the estimator $\widehat\beta_T=(\mathbf X^\top\mathbf X)^{-1}\mathbf X^\top\mathbf T$ satisfies
+\begin{equation}\label{eq:teacherrisk}
+\mathcal E(\widehat\beta_T)=\delta^\top\Sigma\delta+\frac{\tau^2d}{n-d-1}.
+\end{equation}
+Hence $\mathcal E(\widehat\beta_T)<\mathcal E(\widehat\beta_O)$ if and only if
+\begin{equation}\label{eq:criterion}
+\delta^\top\Sigma\delta<\frac{d(\sigma^2-\tau^2)}{n-d-1}.
+\end{equation}
+\end{proposition}
+\begin{proof}
+The coefficient error is $\widehat\beta_T-\beta=\delta+(\mathbf X^\top\mathbf X)^{-1}\mathbf X^\top\bm\xi$. The second term has conditional mean zero, so the cross term vanishes, and its $\Sigma$-weighted second moment follows from the calculation in Lemma~\ref{th:ols}.
+\end{proof}
+
+A fixed $\delta\neq0$ leaves the error floor $\delta^\top\Sigma\delta$ as $n\to\infty$, whereas $\mathcal E(\widehat\beta_O)\to0$ for fixed $d$. A teacher with $\tau^2<\sigma^2$ therefore gives lower risk than outcome supervision only for $n$ below the crossover $d+1+d(\sigma^2-\tau^2)/\delta^\top\Sigma\delta$.
+
+\subsection{Mixed supervision}
+Let $\widehat\beta_\lambda$ minimize $(1-\lambda)\|\mathbf Y-\mathbf Xb\|^2+\lambda\|\mathbf T-\mathbf Xb\|^2$ for $\lambda\in[0,1]$. Allow the pairs $(\varepsilon_i,\xi_i)$ to be jointly Gaussian with variances $\sigma^2,\tau^2$ and covariance $\omega$, independent across $i$ and of the design. Put $B=\delta^\top\Sigma\delta$ and $C=d/(n-d-1)$.
+
+\begin{proposition}[Mixed supervision with correlated errors]\label{th:mix}
+For $n>d+1$,
+\begin{equation}\label{eq:mixrisk}
+\mathcal E(\widehat\beta_\lambda)=\lambda^2B+C\big[(1-\lambda)^2\sigma^2+\lambda^2\tau^2+2\lambda(1-\lambda)\omega\big].
+\end{equation}
+If $B+C(\sigma^2+\tau^2-2\omega)>0$, the unconstrained minimizer is
+\begin{equation}\label{eq:lambda}
+\lambda_{\mathrm{unc}}=\frac{C(\sigma^2-\omega)}{B+C(\sigma^2+\tau^2-2\omega)},
+\end{equation}
+and the minimizer over $[0,1]$ is $\lambda^*=\min\{1,\max\{0,\lambda_{\mathrm{unc}}\}\}$. In particular $\lambda_{\mathrm{unc}}<0$ if and only if $\omega>\sigma^2$, and $\lambda_{\mathrm{unc}}>1$ if and only if $\omega>\tau^2+B/C$. For $\omega=0$ and $\sigma^2>0$, $\lambda^*=C\sigma^2/\{B+C(\sigma^2+\tau^2)\}\in(0,1]$.
+\end{proposition}
+\begin{proof}
+The objective is least squares on the target $(1-\lambda)\mathbf Y+\lambda\mathbf T$, so the coefficient error is $\lambda\delta+(\mathbf X^\top\mathbf X)^{-1}\mathbf X^\top\{(1-\lambda)\bm\varepsilon+\lambda\bm\xi\}$. The noise term has conditional mean zero and conditional covariance $\{(1-\lambda)^2\sigma^2+\lambda^2\tau^2+2\lambda(1-\lambda)\omega\}(\mathbf X^\top\mathbf X)^{-1}$, which gives \eqref{eq:mixrisk}. The risk is a quadratic in $\lambda$ with leading coefficient $B+C\Var(\varepsilon-\xi)\ge0$; setting the derivative to zero gives \eqref{eq:lambda}, and the projection onto $[0,1]$ minimizes a convex quadratic over the interval. The two boundary conditions follow by comparing the numerator of \eqref{eq:lambda} with zero and with the denominator.
+\end{proof}
+
+Since $\omega\le\sigma\tau\le\max\{\sigma^2,\tau^2\}$, at most one of the two boundary conditions can hold. If the leading coefficient vanishes, then $B=0$ and $\varepsilon=\xi$ almost surely, the linear coefficient $C(\sigma^2-\omega)$ also vanishes and the risk does not depend on $\lambda$. For $B>0$ the optimal weight tends to zero as $n\to\infty$ because $C\to0$.
+
+\section{Fixed representations}\label{sec:rep}
+\subsection{Outcome supervision through a representation}
+Let $A\in\R^{r\times d}$ have full row rank, $1\le r\le d$, and let $Z=AX$ with covariance $C_A=A\Sigma A^\top$. The map $A$ is fixed before the labeled sample is drawn. The best linear predictor of $Y$ from $Z$ has coefficient $w_*=C_A^{-1}A\Sigma\beta$, and the part of the signal that $Z$ does not capture has coefficient and variance
+\begin{equation}\label{eq:resid}
+ u_\beta=\beta-A^\top w_*,\qquad B_A=u_\beta^\top\Sigma u_\beta
+ =\beta^\top\big(\Sigma-\Sigma A^\top C_A^{-1}A\Sigma\big)\beta .
+\end{equation}
+We call $B_A$ the representation loss.
+
+\begin{proposition}[Risk through a fixed representation]\label{th:rep}
+Let $\widehat w_O$ be the least-squares coefficient of $Y$ on $Z$ with $n>r+1$. Its excess risk relative to $X^\top\beta$ is
+\begin{equation}\label{eq:reprisk}
+\mathcal E_A=B_A+\frac{r(\sigma^2+B_A)}{n-r-1}.
+\end{equation}
+\end{proposition}
+\begin{proof}
+Since $\Cov(Z,X^\top u_\beta)=A\Sigma u_\beta=0$ and $(Z,X^\top u_\beta)$ is jointly Gaussian, $X^\top u_\beta$ is independent of $Z$ with variance $B_A$. Therefore $Y=Z^\top w_*+e$ with $e=X^\top u_\beta+\varepsilon$ independent of $Z$ and $\Var(e)=\sigma^2+B_A$. The prediction error at a fresh point is $Z_0^\top(\widehat w_O-w_*)-X_0^\top u_\beta$; the two terms are uncorrelated, the second has second moment $B_A$ and the first has expected square $r(\sigma^2+B_A)/(n-r-1)$ by Lemma~\ref{th:ols} applied in dimension $r$.
+\end{proof}
+
+\begin{corollary}[Compression threshold]\label{cor:crossover}
+For $n>d+1$, $\mathcal E_A<\mathcal E(\widehat\beta_O)$ if and only if
+\begin{equation}\label{eq:crossover}
+ B_A<\frac{\sigma^2(d-r)}{n-d-1}.
+\end{equation}
+\end{corollary}
+\begin{proof}
+Write $\mathcal E_A=\{(n-1)B_A+r\sigma^2\}/(n-r-1)$ and compare it with $\sigma^2d/(n-d-1)$. The identity $d(n-r-1)-r(n-d-1)=(d-r)(n-1)$ reduces the comparison to \eqref{eq:crossover}.
+\end{proof}
+
+The threshold decreases to zero as $n$ grows, and it is zero for $r=d$. A representation with $B_A>0$ is therefore preferable to the full predictors only below the sample size $d+1+\sigma^2(d-r)/B_A$.
+
+\subsection{Mixed supervision through a representation}
+A teacher may depend on directions of $X$ that the student's representation discards. Let $\gamma=\beta+\delta$ and $T=X^\top\gamma+\xi$, and define
+\begin{equation}
+ w_\gamma=C_A^{-1}A\Sigma\gamma,\qquad
+ u_\gamma=\gamma-A^\top w_\gamma,
+ \qquad D_A=(w_\gamma-w_*)^\top C_A(w_\gamma-w_*),
+\end{equation}
+together with $G_A=u_\gamma^\top\Sigma u_\gamma$ and $S_A=u_\beta^\top\Sigma u_\gamma$. The error pairs $(\varepsilon_i,\xi_i)$ are as in Proposition~\ref{th:mix}. The student fits a linear head on $Z$ to the targets $V_\lambda=(1-\lambda)Y+\lambda T$.
+
+\begin{theorem}[Exact risk with representation and mixed supervision]\label{th:unified}
+For $n>r+1$ the least-squares head $\widehat w_\lambda$ of $V_\lambda$ on $Z$ satisfies
+\begin{equation}\label{eq:unified}
+\begin{aligned}
+\mathcal E_{A,\lambda}={}& B_A+\lambda^2D_A+\frac{r}{n-r-1}\Big[ (1-\lambda)^2(B_A+\sigma^2) \\
+ &+\lambda^2(G_A+\tau^2)+2\lambda(1-\lambda)(S_A+\omega)\Big].
+\end{aligned}
+\end{equation}
+\end{theorem}
+\begin{proof}
+Let $w_\lambda=(1-\lambda)w_*+\lambda w_\gamma$. Then $V_\lambda=Z^\top w_\lambda+e_\lambda$ with
+$e_\lambda=(1-\lambda)(X^\top u_\beta+\varepsilon)+\lambda(X^\top u_\gamma+\xi)$.
+Both $X^\top u_\beta$ and $X^\top u_\gamma$ are uncorrelated with $Z$, because $A\Sigma u_\beta=A\Sigma u_\gamma=0$, and the errors are independent of $X$. By joint Gaussianity $e_\lambda$ is independent of $Z$, and its variance is the bracket in \eqref{eq:unified}, since $\Cov(X^\top u_\beta+\varepsilon,X^\top u_\gamma+\xi)=S_A+\omega$. The prediction error at a fresh point is
+\[
+Z_0^\top(\widehat w_\lambda-w_\lambda)+\lambda Z_0^\top(w_\gamma-w_*)-X_0^\top u_\beta .
+\]
+The last term is uncorrelated with $Z_0$ and independent of the training sample, and the first term has mean zero given the training design. The three terms are therefore uncorrelated, with expected squares equal to the inverse-Wishart variance term, $\lambda^2D_A$ and $B_A$.
+\end{proof}
+
+Equation~\eqref{eq:unified} is not the sum of a representation loss, a teacher error and an estimation variance that could each be computed separately. The term $S_A$ couples the outcome and teacher residuals, and the unrepresented teacher signal $G_A$ enters the variance term rather than the bias term.
+
+\begin{corollary}[Reduction to Proposition~\ref{th:mix}]
+If $u_\beta=u_\gamma=0$, then $B_A=G_A=S_A=0$ and $D_A=\delta^\top\Sigma\delta$, so \eqref{eq:unified} coincides with \eqref{eq:mixrisk} with $d$ replaced by $r$.
+\end{corollary}
+
+\begin{corollary}[Projected teacher bias]\label{cor:project}
+With $\delta=\gamma-\beta$,
+\begin{equation}\label{eq:projectbias}
+ D_A=\delta^\top\Sigma A^\top (A\Sigma A^\top)^{-1}A\Sigma\delta
+ \leq\delta^\top\Sigma\delta .
+\end{equation}
+Equality holds if and only if $\Sigma^{1/2}\delta$ lies in the row space of $A\Sigma^{1/2}$, and $D_A=0$ if and only if $A\Sigma\delta=0$.
+\end{corollary}
+\begin{proof}
+Since $w_\gamma-w_*=C_A^{-1}A\Sigma\delta$, the first equality follows from the definition of $D_A$. The matrix $P=\Sigma^{1/2}A^\top(A\Sigma A^\top)^{-1}A\Sigma^{1/2}$ is the orthogonal projector onto the row space of $A\Sigma^{1/2}$, and $D_A=\|P\Sigma^{1/2}\delta\|^2\leq\|\Sigma^{1/2}\delta\|^2$, with equality exactly when $\Sigma^{1/2}\delta$ lies in the range of $P$. Finally $P\Sigma^{1/2}\delta=0$ if and only if $(A\Sigma A^\top)^{-1}A\Sigma\delta=0$, that is, $A\Sigma\delta=0$.
+\end{proof}
+
+The projection removes the component of the teacher bias that the student cannot represent from the coefficient bias. That component remains in the training targets, however, and it contributes to $G_A$ and $S_A$ and hence to the variance of the fitted head. Compression thus converts part of the systematic teacher error into target noise.
+
+\begin{corollary}[Optimal teacher weight under compression]\label{cor:unifiedopt}
+Let $C_r=r/(n-r-1)$, $U=B_A+\sigma^2$, $V=G_A+\tau^2$ and $H=S_A+\omega$. If $D_A+C_r(U+V-2H)>0$, the unconstrained minimizer of \eqref{eq:unified} is
+\begin{equation}\label{eq:lambdaunified}
+ \lambda_{A,\mathrm{unc}}=\frac{C_r(U-H)}{D_A+C_r(U+V-2H)},
+\end{equation}
+and the minimizer over $[0,1]$ is its projection onto that interval. If the denominator is zero, the risk does not depend on $\lambda$.
+\end{corollary}
+\begin{proof}
+Expanding \eqref{eq:unified} gives $B_A+C_rU-2C_r(U-H)\lambda+\{D_A+C_r(U+V-2H)\}\lambda^2$. The leading coefficient is nonnegative because $U+V-2H=\Var\{(X^\top u_\beta+\varepsilon)-(X^\top u_\gamma+\xi)\}$. If it vanishes, the two residuals are almost surely equal, so $U=V=H$ and the linear coefficient vanishes as well.
+\end{proof}
+
+Compression changes $B_A$, $D_A$, $G_A$, $S_A$ and $C_r$ together, so it has no fixed effect on the preferred teacher weight. In the example of Section~\ref{sec:mc} the optimal weights with and without compression are $0.4218$ and $0.4221$.
+
+\section{Binary outcomes under a Gaussian-probit model}\label{sec:probit}
+\subsection{Excess Brier risk and calibration of a distorted teacher}
+Let $X\sim N_d(0,\Sigma)$, $\varepsilon\sim N(0,\sigma^2)$ independent of $X$ and $Y=\1\{X^\top\beta+\varepsilon>0\}$. Then
+\begin{equation}\label{eq:probit}
+\eta(x)=\Pr(Y=1\mid X=x)=\Phi(a^\top x),\qquad a=\beta/\sigma .
+\end{equation}
+A teacher reports $t(x)=\Phi(b^\top x)$. In the population, minimizing cross-entropy against these soft targets returns $t$ whenever the student's function class contains it, and the excess Brier risk of $t$ relative to $\eta$ is $\E[\{t(X)-\eta(X)\}^2]$. Throughout we write $v_a=a^\top\Sigma a$, $v_b=b^\top\Sigma b$ and $c=a^\top\Sigma b$.
+
+\begin{proposition}[Excess Brier risk of a probit teacher]\label{th:probit}
+\begin{equation}\label{eq:arcsin}
+\E[\{t(X)-\eta(X)\}^2]=\frac{1}{2\pi}\left[
+\arcsin\frac{v_a}{1+v_a}+\arcsin\frac{v_b}{1+v_b}
+-2\arcsin\frac{c}{\sqrt{(1+v_a)(1+v_b)}}\right].
+\end{equation}
+\end{proposition}
+\begin{proof}
+Let $(U,V)$ be centered jointly Gaussian with variances $s_U^2,s_V^2$ and covariance $s_{UV}$, and let $E_1,E_2$ be independent standard normal variables independent of $(U,V)$. Then $\E[\Phi(U)\Phi(V)]=\Pr(U-E_1\ge0,\,V-E_2\ge0)$, and the bivariate orthant probability \cite{sheppard} gives
+$\E[\Phi(U)\Phi(V)]=\tfrac14+(2\pi)^{-1}\arcsin\{s_{UV}/\sqrt{(1+s_U^2)(1+s_V^2)}\}$.
+Applying this to the pairs $(a^\top X,a^\top X)$, $(b^\top X,b^\top X)$ and $(a^\top X,b^\top X)$ and expanding the square gives \eqref{eq:arcsin}; the constants $\tfrac14$ cancel.
+\end{proof}
+
+\begin{proposition}[Calibration under coefficient scaling]\label{th:scale}
+Suppose $v_a>0$ and $b=ka$ with $k>0$, and let $P=\Phi(ka^\top X)$. For $p\in(0,1)$,
+\begin{equation}\label{eq:calibration}
+\Pr(Y=1\mid P=p)=\Phi\left(\frac{\Phi^{-1}(p)}{k}\right).
+\end{equation}
+The forecast $P$ ranks observations as $\eta(X)$ does and has the same AUC, and it is calibrated if and only if $k=1$. Dividing the probit score by the temperature $k$ recovers $\eta(X)$ exactly.
+\end{proposition}
+\begin{proof}
+The map $u\mapsto\Phi(ku)$ is strictly increasing, so $P=p$ is equivalent to $a^\top X=\Phi^{-1}(p)/k$. Since $P$ is a function of $X$, $\Pr(Y=1\mid P)=\E[\eta(X)\mid P]=\Phi(a^\top X)$, which gives \eqref{eq:calibration}. A strictly increasing transformation leaves the ranking unchanged, and \eqref{eq:calibration} equals $p$ for all $p$ only when $k=1$.
+\end{proof}
+
+\begin{theorem}[Calibration under arbitrary coefficient distortion]\label{th:generalcal}
+Assume $v_b>0$ and let $P=\Phi(b^\top X)$. Then
+\begin{equation}\label{eq:generalcal}
+ \Pr(Y=1\mid P=p)=\Phi\big(\kappa\,\Phi^{-1}(p)\big),\qquad
+ \kappa=\frac{c/v_b}{\sqrt{1+v_a-c^2/v_b}} .
+\end{equation}
+The result covers rotations of the coefficient vector as well as changes of its length, and it reduces to \eqref{eq:calibration} when $b=ka$, $k>0$.
+\end{theorem}
+\begin{proof}
+Conditionally on $b^\top X=s$, the variable $a^\top X$ is Gaussian with mean $cs/v_b$ and variance $v_a-c^2/v_b$. For $U\sim N(m,v)$ and an independent standard normal $E$, $\E[\Phi(U)]=\Pr(E\le U)=\Phi(m/\sqrt{1+v})$. Substituting $s=\Phi^{-1}(p)$ gives \eqref{eq:generalcal}. For $b=ka$ one has $c/v_b=1/k$ and $c^2/v_b=v_a$, so $\kappa=1/k$.
+\end{proof}
+
+The calibration curve \eqref{eq:generalcal} is linear on the probit scale with zero intercept. When $c=0$, the scores $a^\top X$ and $b^\top X$ are independent, $P$ carries no information about $Y$ and the curve is constant at $\tfrac12$.
+
+\subsection{Recalibration}
+\begin{corollary}[Residual risk after exact recalibration]\label{cor:recal}
+Under the assumptions of Theorem~\ref{th:generalcal}, the Brier-optimal forecast among functions of $P$ is
+\begin{equation}
+P_{\mathrm{cal}}=\E[Y\mid P]=\Phi(\kappa\, b^\top X),
+\end{equation}
+that is, the teacher's probit score divided by the temperature $1/\kappa$ when $c>0$. Its excess Brier risk is
+\begin{equation}\label{eq:residual}
+\E[\{P_{\mathrm{cal}}-\eta(X)\}^2]=\frac{1}{2\pi}\left[\arcsin\frac{v_a}{1+v_a}-\arcsin\frac{c^2}{v_b(1+v_a)}\right],
+\end{equation}
+which is zero if and only if $b$ is a nonzero multiple of $a$. For $c>0$ the recalibration map is strictly increasing and preserves the ranking; for $c<0$ it is strictly decreasing and reverses the ranking; for $c=0$ the recalibrated forecast is constant at $\tfrac12$.
+\end{corollary}
+\begin{proof}
+The first display follows from Theorem~\ref{th:generalcal}, and the conditional expectation minimizes $\E[\{f(P)-Y\}^2]$ over functions $f$. Because $P_{\mathrm{cal}}=\E[\eta(X)\mid P]$, the cross term in the expansion of the square equals $\E[P_{\mathrm{cal}}^2]$, so $\E[(P_{\mathrm{cal}}-\eta)^2]=\E[\eta^2]-\E[P_{\mathrm{cal}}^2]$. The orthant identity in the proof of Proposition~\ref{th:probit} gives $\E[\eta^2]=\tfrac14+(2\pi)^{-1}\arcsin\{v_a/(1+v_a)\}$ and $\E[P_{\mathrm{cal}}^2]=\tfrac14+(2\pi)^{-1}\arcsin\{\kappa^2v_b/(1+\kappa^2v_b)\}$. From the definition of $\kappa$, $1+\kappa^2v_b=(1+v_a)/(1+v_a-c^2/v_b)$, so $\kappa^2v_b/(1+\kappa^2v_b)=c^2/\{v_b(1+v_a)\}$, which gives \eqref{eq:residual}. The difference is zero if and only if $c^2=v_av_b$, which by the Cauchy--Schwarz inequality in the $\Sigma$ inner product holds if and only if $b$ and $a$ are collinear. The statements about monotonicity follow from the sign of $\kappa$.
+\end{proof}
+
+Temperature scaling therefore corrects a teacher whose coefficient has the right direction and the wrong length, but it leaves the excess \eqref{eq:residual} when the direction is wrong. Any function of $P$ has resolution, in the sense of Murphy's decomposition of the Brier score \cite{murphy}, no greater than that of $\E[Y\mid P]$, so no recalibration of $P$ can recover the information about $a^\top X$ that is lost in projecting onto $b^\top X$. The statement that the exact map is a temperature scaling depends on the probit link. Under a logistic link the conditional mean of a logistic function of a Gaussian variable is not itself a logistic function of that variable, and temperature scaling on the logit scale \cite{guo} is then an approximation to the recalibration map.
+
+\subsection{Evaluation against teacher probabilities}
+When a student $f$ is evaluated against reference probabilities $t$ instead of outcomes, the quantity measured is $\E[\{f(X)-t(X)\}^2]$. The triangle inequality in $L^2$ gives
+\begin{equation}\label{eq:triangle}
+\Big|\,\E[\{f(X)-\eta(X)\}^2]^{1/2}-\E[\{t(X)-\eta(X)\}^2]^{1/2}\Big|\le\E[\{f(X)-t(X)\}^2]^{1/2}.
+\end{equation}
+Agreement with the teacher therefore bounds the student's excess Brier risk only to within the teacher's own excess, which is given by \eqref{eq:arcsin} in the probit model. A student that reproduces the teacher exactly inherits that excess.
+
+\subsection{Information retained by a representation}
+For $Z=AX$, Gaussian conditioning gives $X^\top\beta\mid Z=z\sim N(z^\top w_*,B_A)$ with $w_*$ and $B_A$ as in \eqref{eq:resid}. Therefore
+\begin{equation}\label{eq:probitrep}
+\Pr(Y=1\mid Z=z)=\Phi\left(\frac{z^\top w_*}{\sqrt{\sigma^2+B_A}}\right),
+\end{equation}
+so the discarded linear signal acts as additional latent noise. Equation~\eqref{eq:probitrep} describes the best forecast available from the representation. It is not a finite-sample risk for a fitted probit model.
+
+\section{Coherence of candidate scores}\label{sec:coherence}
+In fixed-label classification the event, and hence the target probability, does not depend on how the candidates are presented. For a candidate-scoring model the wording and membership of the candidate set can change the output. A change is legitimate when it reflects a change in the event being asked about, and it is an inconsistency when the same event receives incompatible probabilities.
+
+Let $q_{\mathcal P}(F\mid x)$ denote the probability that the model assigns to candidate $F$ when the mutually exclusive and exhaustive candidate set $\mathcal P$ is presented with input $x$. Let $E=E_1\cup E_2$ with $E_1\cap E_2=\emptyset$, and let $E^c$ be the complement of $E$. The model is coherent under this refinement if
+\begin{equation}\label{eq:coherence}
+q_{\{E,E^c\}}(E\mid x)=q_{\{E_1,E_2,E^c\}}(E_1\mid x)+q_{\{E_1,E_2,E^c\}}(E_2\mid x).
+\end{equation}
+Similarly, a relabeling or reordering of the candidates should permute the probability vector without changing the probability of any event. A softmax layer guarantees normalization within each presented set, but it does not impose \eqref{eq:coherence} across different sets.
+
+\begin{proposition}[Coherence of independently computed scores]\label{prop:coherence}
+Suppose each candidate event $F$ receives a positive weight $w(F)=\exp s(F)$ that does not depend on the other candidates presented, and the probabilities are obtained by normalizing the weights over the presented set. Then \eqref{eq:coherence} holds if and only if
+\begin{equation}\label{eq:logsum}
+\exp s(E)=\exp s(E_1)+\exp s(E_2),\quad\text{equivalently}\quad s(E)=\log\{\exp s(E_1)+\exp s(E_2)\}.
+\end{equation}
+\end{proposition}
+\begin{proof}
+Write $u=w(E)$, $v=w(E_1)+w(E_2)$ and $h=w(E^c)>0$. Condition \eqref{eq:coherence} reads $u/(u+h)=v/(v+h)$, which is equivalent to $uh=vh$ and hence to $u=v$.
+\end{proof}
+
+The normalization in Proposition~\ref{prop:coherence} is Luce's choice model \cite{luce}, and the assumption that weights do not depend on the other candidates is his choice axiom. Under that assumption, invariance to reordering holds automatically, and \eqref{eq:logsum} is the additional condition required for refinement. The Jev announcement describes independent scoring of candidates for high-cardinality choices \cite{typesafe}. If candidate scores are instead computed within a shared context that contains all candidates, they can depend on the other candidates and on their order, and both reordering invariance and \eqref{eq:coherence} become empirical questions that can be tested by posing the same event under different candidate sets.
+
+\section{Monte Carlo experiments}\label{sec:mc}
+\subsection{Design}
+All experiments use the parameters in Table~\ref{tab:params}. For the regression results, $\Sigma=I_5$ and $A=[I_3\;0]$, so the test-point expectation in \eqref{eq:risk} is available in closed form given the fitted coefficients, and the Monte Carlo average is taken over $20{,}000$ independent training samples per configuration. These parameters give $B=0.2378$, $B_A=0.0800$, $D_A=0.0753$, $G_A=0.4625$ and $S_A=0.1900$. For the probit results, $\Sigma=I_2$, $a=(1,0)^\top$ and $b=(\cos\theta,\sin\theta)^\top$, so that $v_a=v_b=1$ and $c=\cos\theta$. Calibration curves are estimated from $2\times10^6$ simulated binary outcomes per angle in 20 equal-width forecast bins, and Brier excesses are estimated from $10^8$ draws per angle. The code is in \texttt{experiments.py}, which runs on a single GPU.
+
+\begin{table}[ht]
+\centering\small
+\caption{Simulation parameters.}\label{tab:params}
+\begin{tabular}{p{0.27\linewidth}p{0.65\linewidth}}
+\toprule
+Quantity & Value \\
+\midrule
+Design & $d=5$, $r=3$, $\Sigma=I_5$, $A=[I_3\;0]$ \\
+Outcome coefficient & $\beta=(0.9,-0.6,0.5,0.2,-0.2)^\top$ \\
+Teacher distortion & $\delta=(0.22,-0.13,0.10,0.35,-0.20)^\top$ \\
+Errors & $\sigma^2=1.3$, $\tau^2=0.7$, $\omega=0.22$ \\
+Sample-size sweep & $n\in\{12,15,20,27,40,60,95,150,250\}$; $\lambda=0.45$ for the mixed head \\
+Teacher-weight sweep & $n=27$; 31 equally spaced values of $\lambda$ in $[0,1]$ \\
+Replications & $20{,}000$ training samples per configuration \\
+Probit calibration & $\theta\in\{0^\circ,30^\circ,60^\circ\}$ \\
+Random seed & $20261016$ (PyTorch generator) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Gaussian design}
+Figure~\ref{fig:mc} compares the formulas with simulation. In panel~(a), 34 of the 36 Monte Carlo means lie within their 95\% intervals of the formulas \eqref{eq:olsrisk}, \eqref{eq:teacherrisk}, \eqref{eq:reprisk} and \eqref{eq:unified}; the two exceptions lie at $1.01$ and $1.49$ interval half-widths. Teacher supervision has lower risk than outcome supervision below $n=18.6$, and the compressed outcome model has lower risk than the full model below $n=38.5$, as predicted by \eqref{eq:criterion} and \eqref{eq:crossover}. The teacher-trained model approaches its floor $B=0.2378$, and the compressed models approach $B_A=0.08$ and $B_A+\lambda^2D_A=0.0952$. In panel~(b) all 62 Monte Carlo means lie within their 95\% intervals. The formulas give optimal weights $\lambda^*=0.4221$ for the full representation and $0.4218$ for the compressed one, and the grid minimizers are both $0.433$, the grid point nearest to them. At $n=27$ the minimum risk is $0.2010$ with the full representation and $0.2066$ with the compressed one, so compression does not reduce the risk of the optimally mixed estimator at this sample size. In panel~(c) the binned event frequencies follow the calibration curves of Theorem~\ref{th:generalcal}, with $\kappa=1$, $0.775$ and $0.378$.
+
+\begin{figure}[ht]
+\centering
+\includegraphics[width=\linewidth]{validation_sweeps.pdf}
+\caption{Exact formulas (curves) and Monte Carlo estimates (points with 95\% intervals, mostly smaller than the markers). (a) Excess prediction risk against training size for outcome and teacher supervision with all predictors, outcome supervision through the compressed representation and mixed supervision with $\lambda=0.45$ through the compressed representation. (b) Excess risk against teacher weight at $n=27$; dotted lines mark the minimizers from Proposition~\ref{th:mix} and Corollary~\ref{cor:unifiedopt}. (c) Calibration curves of rotated probit teachers (Theorem~\ref{th:generalcal}) and binned event frequencies; the dashed line is the diagonal.}\label{fig:mc}
+\end{figure}
+
+Table~\ref{tab:brier} reports the Brier excesses. The simulated values agree with Proposition~\ref{th:probit} and Corollary~\ref{cor:recal} to within $1.3$ standard errors, and two-dimensional Gauss--Hermite quadrature reproduces both formulas to $10^{-15}$. At $\theta=60^\circ$ recalibration reduces the excess Brier risk from $0.0862$ to $0.0634$, and the remainder is the cost of the wrong coefficient direction.
+
+\begin{table}[ht]
+\centering\small
+\caption{Excess Brier risk relative to $\eta$ for rotated probit teachers, before and after exact recalibration. Monte Carlo standard errors in parentheses ($10^8$ draws per angle).}\label{tab:brier}
+\begin{tabular}{rcccc}
+\toprule
+& \multicolumn{2}{c}{Teacher forecast $P$} & \multicolumn{2}{c}{Recalibrated $P_{\mathrm{cal}}$} \\
+\cmidrule(lr){2-3}\cmidrule(lr){4-5}
+$\theta$ & Formula \eqref{eq:arcsin} & Monte Carlo & Formula \eqref{eq:residual} & Monte Carlo \\
+\midrule
+$0^\circ$ & $0$ & $0$ & $0$ & $0$ \\
+$30^\circ$ & $0.024117$ & $0.024121\;(0.000004)$ & $0.022155$ & $0.022158\;(0.000003)$ \\
+$60^\circ$ & $0.086236$ & $0.086223\;(0.000011)$ & $0.063387$ & $0.063378\;(0.000007)$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Non-Gaussian design}
+The inverse-Wishart moments and the independence of the residual from $Z$ both use the Gaussian design. To measure the effect of departing from it, we drew $X=\Sigma^{1/2}W$ with an equicorrelated $\Sigma$ ($\Sigma_{jj}=1$, $\Sigma_{jk}=0.5$) and three laws for $W$, each with identity covariance: standard Gaussian, independent uniform coordinates and a multivariate $t$ distribution with five degrees of freedom. The covariance of $X$ is the same under all three laws, so the formulas give the same values. Under the uniform and multivariate-$t$ laws the residual $X^\top u_\beta$ remains uncorrelated with $Z$ but is no longer independent of it. Table~\ref{tab:robust} reports the ratio of the simulated risk to the formula for outcome supervision with all predictors, \eqref{eq:olsrisk}, and for the compressed mixed head with $\lambda=0.45$, \eqref{eq:unified}.
+
+\begin{table}[ht]
+\centering\small
+\caption{Ratio of simulated excess risk to the Gaussian-design formula, equicorrelated $\Sigma$ with $\rho=0.5$, $20{,}000$ training samples per entry. The 95\% Monte Carlo interval half-widths of the ratios are at most $0.022$.}\label{tab:robust}
+\begin{tabular}{lcccccc}
+\toprule
+& \multicolumn{3}{c}{Outcome OLS, all predictors} & \multicolumn{3}{c}{Mixed head, compressed} \\
+\cmidrule(lr){2-4}\cmidrule(lr){5-7}
+Design law & $n=12$ & $n=27$ & $n=95$ & $n=12$ & $n=27$ & $n=95$ \\
+\midrule
+Gaussian & $1.005$ & $1.003$ & $1.000$ & $1.011$ & $1.006$ & $1.000$ \\
+Uniform coordinates & $0.903$ & $0.951$ & $0.979$ & $0.928$ & $0.971$ & $0.994$ \\
+Multivariate $t_5$ & $1.354$ & $1.197$ & $1.070$ & $1.233$ & $1.127$ & $1.054$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The uniform design, whose coordinates have lighter tails than the Gaussian, gives risks below the formulas, and the multivariate-$t$ design, a scale mixture of Gaussians with heavier tails, gives risks above them. The discrepancies shrink with $n$. They are larger for the full model, whose risk consists entirely of estimation variance, than for the compressed head, whose risk includes the bias terms $B_A$ and $\lambda^2D_A$ that do not depend on the design law. At $n=95$ the formulas are within $7\%$ of simulation under both non-Gaussian laws, and at $n=12$ they understate the risk by $26\%$ of its simulated value under the multivariate-$t$ law.
+
+\section{Scope and limitations}\label{sec:limits}
+The exact results require a Gaussian random design, a sample size exceeding the fitted dimension by more than one, a representation fixed before the labeled sample is drawn and a teacher that is fixed relative to the student's sample. A deterministic linear teacher corresponds to $\tau=0$ and is covered. A deterministic nonlinear teacher has residuals that are uncorrelated with the features in the population but in general depend on $X$ and are heteroscedastic given $Z$, so the independence step in Theorem~\ref{th:unified} fails. A teacher trained on records that overlap the student's sample makes $\delta$ and the teacher errors depend on that sample. Training LoRA adapters, as in the JevAny models, makes the representation depend on the labels and is not covered.
+
+Fitting an intercept changes the degrees of freedom. With centered Gaussian predictors and an estimated intercept, the centered Gram matrix is distributed as $W_d(\Sigma,n-1)$, so the slope-risk factors $d/(n-d-1)$ and $r/(n-r-1)$ become $d/(n-d-2)$ and $r/(n-r-2)$, for $n>d+2$ and $n>r+2$ respectively; the intercept estimate contributes a further term to the prediction error.
+
+The probit results describe fixed teacher forecasts and population recalibration. They do not give the finite-sample distribution of a fitted nonlinear classifier or of a temperature estimated on a finite calibration set.
+
+Three further tests are suggested by the analysis but are not carried out here. The first perturbs the serialization of a fixed tabular record (field order, number formatting and label wording) and measures the variation of the output probability within an observation. The second divides one candidate into mutually exclusive subcandidates and measures the departure from \eqref{eq:coherence}. The third compares a candidate-scoring model with conventional classifiers trained on the same realized outcomes and, separately, on the same teacher probabilities, using proper scores on held-out outcomes with paired splits and seeds, so that the effect of the architecture is separated from the effect of the training target.
+
+Finally, predicting an outcome and selecting an action are different problems. A recommendation label may encode a human policy, a teacher's judgment or an optimization rule, and the appropriate target and loss depend on which of these is to be predicted. When actions change outcomes, causal assumptions are required in addition to the statistical ones used here.
+
+\section{Conclusion}\label{sec:conclusion}
+Under Gaussian surrogates the three training ingredients documented for candidate-scoring models have exact consequences. Training on teacher targets has a risk floor equal to the teacher's coefficient bias, and it improves on outcome supervision only below a crossover sample size. A fixed representation trades the representation loss $B_A$ against the estimation variance, and it projects the teacher bias onto the retained directions while moving the unrepresented teacher signal into the variance. The optimal teacher weight depends on the sample size, the teacher distortion and the correlation of the target errors. In the probit model, temperature scaling corrects a teacher whose coefficient has the right direction and leaves a residual excess, given in closed form, when the direction is wrong. Agreement with a teacher bounds the student's error against outcomes only up to the teacher's own error. Under multivariate-$t$ design the simulated regression risk exceeds the formula by up to $35\%$ at $n=12$, and the discrepancy shrinks with $n$. These results support evaluating candidate-scoring models on realized outcomes, alongside tests of teacher bias and of coherence across candidate sets.
+
+\begin{thebibliography}{99}
+\bibitem{typesafe} D.~Almeida, ``Introducing System One Models \& Jev,'' TypeSafe blog, 2026. \url{https://typesafe.ai/blog/introducing-system-one-models-and-jev}.
+\bibitem{anderson} T.~W. Anderson, \emph{An Introduction to Multivariate Statistical Analysis}, 3rd ed. Hoboken, NJ: Wiley, 2003.
+\bibitem{breiman} L.~Breiman and D.~Freedman, ``How Many Variables Should Be Entered in a Regression Equation?'' \emph{Journal of the American Statistical Association}, 78(381):131--136, 1983.
+\bibitem{burakov} D.~Burakov, \emph{Inference Machines: What Language Models Believe, and How They Change Their Minds}, 2026. Companion repository: \url{https://github.com/deburky/inference-machines-book}.
+\bibitem{gneiting} T.~Gneiting and A.~E. Raftery, ``Strictly Proper Scoring Rules, Prediction, and Estimation,'' \emph{Journal of the American Statistical Association}, 102(477):359--378, 2007.
+\bibitem{good} I.~J. Good, ``Studies in the History of Probability and Statistics. XXXVII. A.~M. Turing's Statistical Work in World War II,'' \emph{Biometrika}, 66(2):393--396, 1979.
+\bibitem{guo} C.~Guo, G.~Pleiss, Y.~Sun and K.~Q. Weinberger, ``On Calibration of Modern Neural Networks,'' in \emph{Proceedings of the 34th International Conference on Machine Learning}, PMLR 70:1321--1330, 2017.
+\bibitem{hinton} G.~Hinton, O.~Vinyals and J.~Dean, ``Distilling the Knowledge in a Neural Network,'' arXiv:1503.02531, 2015.
+\bibitem{jevany} JevAny contributors, ``Algorithm,'' JevAny documentation, 2026. \url{https://simplejev.org/JevAny/docs/ALGORITHM.html}.
+\bibitem{luce} R.~D. Luce, \emph{Individual Choice Behavior: A Theoretical Analysis}. New York: Wiley, 1959.
+\bibitem{muirhead} R.~J. Muirhead, \emph{Aspects of Multivariate Statistical Theory}. New York: Wiley, 1982.
+\bibitem{murphy} A.~H. Murphy, ``A New Vector Partition of the Probability Score,'' \emph{Journal of Applied Meteorology}, 12:595--600, 1973.
+\bibitem{sheppard} W.~F. Sheppard, ``On the Application of the Theory of Error to Cases of Normal Distribution and Normal Correlation,'' \emph{Philosophical Transactions of the Royal Society of London, Series A}, 192:101--167, 1899.
+\end{thebibliography}
+\end{document}
